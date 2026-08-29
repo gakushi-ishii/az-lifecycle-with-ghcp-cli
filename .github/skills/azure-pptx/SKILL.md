@@ -5,7 +5,7 @@ description: "Microsoft Azure PowerPoint Templateを使ったPPTXの作成、編
 
 # Azure PPTX Skill
 
-このスキルは、Microsoft Azure PowerPoint Templateを保持したままプレゼンテーションを作成、編集するためのリポジトリ固有手順を定義する。実装には公開仕様と外部OSSを使用する。
+このスキルは、Microsoft Azure PowerPoint Templateを保持したままプレゼンテーションを作成、編集するためのリポジトリ固有手順を定義する。実装には公開仕様とオープンソースソフトウェアを使用する。
 
 ## 適用条件
 
