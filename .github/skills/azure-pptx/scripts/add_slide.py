@@ -1,263 +1,313 @@
-"""Add a new slide to an unpacked PPTX directory.
-
-Usage: python add_slide.py <unpacked_dir> <source>
-
-The source can be:
-  - A slide file (e.g., slide2.xml) - duplicates the slide
-  - A layout file (e.g., slideLayout2.xml) - creates from layout
-
-When creating from a layout, placeholder shapes (<p:sp> with <p:ph>) are
-copied from the layout into the new slide with their position, size, and
-formatting intact. Text content is replaced with a single empty paragraph
-so the Edit tool can target each placeholder.
-
-Examples:
-    python add_slide.py unpacked/ slide2.xml
-    # Duplicates slide2, creates slide5.xml
-
-    python add_slide.py unpacked/ slideLayout2.xml
-    # Creates slide5.xml from slideLayout2.xml with placeholders
-
-To see available layouts: ls unpacked/ppt/slideLayouts/
-
-Prints the <p:sldId> element to add to presentation.xml.
-"""
-
+#!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.9"
-# dependencies = [
-#     "defusedxml",
-# ]
+# requires-python = ">=3.14"
+# dependencies = ["python-pptx==1.0.2"]
 # ///
 
-import re
-import shutil
-import sys
+"""Create a presentation from an Azure POTX/PPTX template."""
+
+from __future__ import annotations
+
+import argparse
+import tempfile
+import zipfile
 from pathlib import Path
 
-import defusedxml.minidom
+from pptx import Presentation
+from pptx.exc import PackageNotFoundError
+from pptx.presentation import Presentation as PresentationType
+from pptx.slide import Slide
+
+CONTENT_TYPES_PATH = "[Content_Types].xml"
+PRESENTATION_CONTENT_TYPE = (
+    b"application/vnd.openxmlformats-officedocument."
+    b"presentationml.presentation.main+xml"
+)
+TEMPLATE_CONTENT_TYPE = (
+    b"application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"
+)
+SECTION_LIST_TAG = (
+    "{http://schemas.microsoft.com/office/powerpoint/2010/main}sectionLst"
+)
 
 
-def get_next_slide_number(slides_dir: Path) -> int:
-    existing = [
-        int(m.group(1))
-        for f in slides_dir.glob("slide*.xml")
-        if (m := re.match(r"slide(\d+)\.xml", f.name))
-    ]
-    return max(existing) + 1 if existing else 1
-
-
-def _extract_placeholder_shapes(layout_path: Path) -> str:
-    """Extract placeholder shapes from a layout XML file.
-
-    Returns XML string of <p:sp> elements that contain <p:ph> elements,
-    with text content replaced by a single empty paragraph.
-    """
-    content = layout_path.read_text(encoding="utf-8")
-    doc = defusedxml.minidom.parseString(content)
-
-    shapes = []
-    shape_id = 2
-    for sp in doc.getElementsByTagName("p:sp"):
-        ph_elements = sp.getElementsByTagName("p:ph")
-        if not ph_elements:
-            continue
-
-        # Update shape ID to avoid collisions
-        cNvPr_list = sp.getElementsByTagName("p:cNvPr")
-        if cNvPr_list:
-            cNvPr_list[0].setAttribute("id", str(shape_id))
-            shape_id += 1
-
-        # Replace text body with empty paragraph preserving structure
-        txBody_list = sp.getElementsByTagName("p:txBody")
-        if txBody_list:
-            txBody = txBody_list[0]
-            # Remove all existing paragraphs
-            for p in list(txBody.getElementsByTagName("a:p")):
-                txBody.removeChild(p)
-            # Add single empty paragraph
-            empty_p = doc.createElement("a:p")
-            txBody.appendChild(empty_p)
-
-        shapes.append(sp.toxml())
-
-    return "\n".join(shapes)
-
-
-def create_slide_from_layout(unpacked_dir: Path, layout_file: str) -> None:
-    slides_dir = unpacked_dir / "ppt" / "slides"
-    rels_dir = slides_dir / "_rels"
-    layouts_dir = unpacked_dir / "ppt" / "slideLayouts"
-
-    layout_path = layouts_dir / layout_file
-    if not layout_path.exists():
-        print(f"Error: {layout_path} not found", file=sys.stderr)
-        sys.exit(1)
-
-    next_num = get_next_slide_number(slides_dir)
-    dest = f"slide{next_num}.xml"
-    dest_slide = slides_dir / dest
-    dest_rels = rels_dir / f"{dest}.rels"
-
-    placeholder_shapes = _extract_placeholder_shapes(layout_path)
-
-    slide_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
-  <p:cSld>
-    <p:spTree>
-      <p:nvGrpSpPr>
-        <p:cNvPr id="1" name=""/>
-        <p:cNvGrpSpPr/>
-        <p:nvPr/>
-      </p:nvGrpSpPr>
-      <p:grpSpPr>
-        <a:xfrm>
-          <a:off x="0" y="0"/>
-          <a:ext cx="0" cy="0"/>
-          <a:chOff x="0" y="0"/>
-          <a:chExt cx="0" cy="0"/>
-        </a:xfrm>
-      </p:grpSpPr>
-{placeholder_shapes}
-    </p:spTree>
-  </p:cSld>
-  <p:clrMapOvr>
-    <a:masterClrMapping/>
-  </p:clrMapOvr>
-</p:sld>"""
-    dest_slide.write_text(slide_xml, encoding="utf-8")
-
-    rels_dir.mkdir(exist_ok=True)
-    rels_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/{layout_file}"/>
-</Relationships>"""
-    dest_rels.write_text(rels_xml, encoding="utf-8")
-
-    _add_to_content_types(unpacked_dir, dest)
-
-    rid = _add_to_presentation_rels(unpacked_dir, dest)
-
-    next_slide_id = _get_next_slide_id(unpacked_dir)
-
-    # PATCH(project): Print informational messages to stderr so stdout
-    # contains only the machine-parseable sldId XML element.
-    # Callers that capture stdout to build sldIdLst will no longer get
-    # noise mixed into the XML.
-    print(f"    Created {dest} from {layout_file}", file=sys.stderr)
-    print(f'<p:sldId id="{next_slide_id}" r:id="{rid}"/>')
-
-
-def duplicate_slide(unpacked_dir: Path, source: str) -> None:
-    slides_dir = unpacked_dir / "ppt" / "slides"
-    rels_dir = slides_dir / "_rels"
-
-    source_slide = slides_dir / source
-
-    if not source_slide.exists():
-        print(f"Error: {source_slide} not found", file=sys.stderr)
-        sys.exit(1)
-
-    next_num = get_next_slide_number(slides_dir)
-    dest = f"slide{next_num}.xml"
-    dest_slide = slides_dir / dest
-
-    source_rels = rels_dir / f"{source}.rels"
-    dest_rels = rels_dir / f"{dest}.rels"
-
-    shutil.copy2(source_slide, dest_slide)
-
-    if source_rels.exists():
-        shutil.copy2(source_rels, dest_rels)
-
-        rels_content = dest_rels.read_text(encoding="utf-8")
-        rels_content = re.sub(
-            r'\s*<Relationship[^>]*Type="[^"]*notesSlide"[^>]*/>\s*',
-            "\n",
-            rels_content,
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Create a PPTX from a POTX/PPTX template and add one slide. "
+            "The input file is never overwritten."
         )
-        dest_rels.write_text(rels_content, encoding="utf-8")
+    )
+    parser.add_argument("template", type=Path, help="Input .potx or .pptx file")
+    parser.add_argument("output", type=Path, help="Output .pptx file")
+    parser.add_argument(
+        "--layout-index",
+        type=int,
+        default=12,
+        help="Slide layout index to use (default: 12)",
+    )
+    parser.add_argument("--title", help="Text for the title placeholder")
+    parser.add_argument(
+        "--body",
+        action="append",
+        default=[],
+        help="Body paragraph. Repeat the option for multiple paragraphs.",
+    )
+    parser.add_argument(
+        "--body-placeholder-index",
+        type=int,
+        help="Placeholder index for body text",
+    )
+    slide_group = parser.add_mutually_exclusive_group()
+    slide_group.add_argument(
+        "--clear-slides",
+        dest="clear_slides",
+        action="store_true",
+        default=None,
+        help="Remove existing slides before adding the new slide",
+    )
+    slide_group.add_argument(
+        "--keep-slides",
+        dest="clear_slides",
+        action="store_false",
+        help="Keep existing slides",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing output file",
+    )
+    return parser
 
-    _add_to_content_types(unpacked_dir, dest)
 
-    rid = _add_to_presentation_rels(unpacked_dir, dest)
-
-    next_slide_id = _get_next_slide_id(unpacked_dir)
-
-    # PATCH(project): Print informational messages to stderr (see create_slide_from_layout)
-    print(f"    Created {dest} from {source}", file=sys.stderr)
-    print(f'<p:sldId id="{next_slide_id}" r:id="{rid}"/>')
-
-
-def _add_to_content_types(unpacked_dir: Path, dest: str) -> None:
-    content_types_path = unpacked_dir / "[Content_Types].xml"
-    content_types = content_types_path.read_text(encoding="utf-8")
-
-    new_override = f'<Override PartName="/ppt/slides/{dest}" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
-
-    if f"/ppt/slides/{dest}" not in content_types:
-        content_types = content_types.replace("</Types>", f"  {new_override}\n</Types>")
-        content_types_path.write_text(content_types, encoding="utf-8")
+def validate_paths(template: Path, output: Path, force: bool) -> None:
+    if not template.is_file():
+        raise ValueError(f"input file does not exist: {template}")
+    if template.suffix.lower() not in {".potx", ".pptx"}:
+        raise ValueError("input extension must be .potx or .pptx")
+    if output.suffix.lower() != ".pptx":
+        raise ValueError("output extension must be .pptx")
+    if template.resolve() == output.resolve():
+        raise ValueError("input and output must be different files")
+    if output.exists() and not force:
+        raise ValueError(f"output already exists; use --force to replace it: {output}")
 
 
-def _add_to_presentation_rels(unpacked_dir: Path, dest: str) -> str:
-    pres_rels_path = unpacked_dir / "ppt" / "_rels" / "presentation.xml.rels"
-    pres_rels = pres_rels_path.read_text(encoding="utf-8")
+def convert_potx_to_pptx(source: Path, destination: Path) -> None:
+    converted = False
+    with (
+        zipfile.ZipFile(source, "r") as source_zip,
+        zipfile.ZipFile(destination, "w", allowZip64=True) as destination_zip,
+    ):
+        if CONTENT_TYPES_PATH not in source_zip.namelist():
+            raise ValueError(f"{CONTENT_TYPES_PATH} is missing from {source}")
 
-    rids = [int(m) for m in re.findall(r'Id="rId(\d+)"', pres_rels)]
-    next_rid = max(rids) + 1 if rids else 1
-    rid = f"rId{next_rid}"
+        for entry in source_zip.infolist():
+            with source_zip.open(entry) as source_file:
+                content = source_file.read()
 
-    new_rel = f'<Relationship Id="{rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/{dest}"/>'
+            if entry.filename == CONTENT_TYPES_PATH:
+                occurrences = content.count(TEMPLATE_CONTENT_TYPE)
+                if occurrences != 1:
+                    raise ValueError(
+                        "expected exactly one PresentationML template content type "
+                        f"in {CONTENT_TYPES_PATH}, found {occurrences}"
+                    )
+                content = content.replace(
+                    TEMPLATE_CONTENT_TYPE,
+                    PRESENTATION_CONTENT_TYPE,
+                    1,
+                )
+                converted = True
 
-    if f"slides/{dest}" not in pres_rels:
-        pres_rels = pres_rels.replace(
-            "</Relationships>", f"  {new_rel}\n</Relationships>"
+            destination_zip.writestr(entry, content)
+
+    if not converted:
+        raise ValueError("the POTX content type was not converted")
+
+
+def delete_all_slides(presentation: PresentationType) -> int:
+    # python-pptx has no public slide-removal API. Keep the private dependency
+    # limited to _sldIdLst and pin the library version in the PEP 723 metadata.
+    slide_ids = presentation.slides._sldIdLst
+    removed = 0
+    for slide_id in list(slide_ids):
+        presentation.part.drop_rel(slide_id.rId)
+        slide_ids.remove(slide_id)
+        removed += 1
+    return removed
+
+
+def remove_section_lists(presentation: PresentationType) -> int:
+    # Sections refer to slide IDs. Once every slide is removed, retaining the
+    # section list leaves references to slides that no longer exist.
+    presentation_element = presentation.part._element
+    section_lists = list(presentation_element.iter(SECTION_LIST_TAG))
+    for section_list in section_lists:
+        parent = section_list.getparent()
+        if parent is not None:
+            parent.remove(section_list)
+    return len(section_lists)
+
+
+def count_section_lists(presentation: PresentationType) -> int:
+    return sum(1 for _ in presentation.part._element.iter(SECTION_LIST_TAG))
+
+
+def available_layouts(presentation: PresentationType) -> str:
+    return ", ".join(
+        f"{index}:{layout.name or '<unnamed>'}"
+        for index, layout in enumerate(presentation.slide_layouts)
+    )
+
+
+def select_body_placeholder(
+    slide: Slide,
+    placeholder_index: int | None,
+):
+    if placeholder_index is not None:
+        try:
+            placeholder = slide.placeholders[placeholder_index]
+        except KeyError as exc:
+            raise ValueError(
+                f"body placeholder index {placeholder_index} is not present"
+            ) from exc
+        if not placeholder.has_text_frame:
+            raise ValueError(
+                f"placeholder index {placeholder_index} does not accept text"
+            )
+        return placeholder
+
+    title = slide.shapes.title
+    title_index = (
+        title.placeholder_format.idx
+        if title is not None and title.is_placeholder
+        else None
+    )
+    for placeholder in slide.placeholders:
+        if (
+            placeholder.has_text_frame
+            and placeholder.placeholder_format.idx != title_index
+        ):
+            return placeholder
+
+    raise ValueError("the selected layout has no body text placeholder")
+
+
+def set_body_text(
+    slide: Slide,
+    paragraphs: list[str],
+    placeholder_index: int | None,
+) -> None:
+    if not paragraphs:
+        return
+    if any(not paragraph.strip() for paragraph in paragraphs):
+        raise ValueError("body paragraphs must not be empty")
+
+    placeholder = select_body_placeholder(slide, placeholder_index)
+    text_frame = placeholder.text_frame
+    text_frame.clear()
+    text_frame.paragraphs[0].text = paragraphs[0]
+    for text in paragraphs[1:]:
+        text_frame.add_paragraph().text = text
+
+
+def create_presentation(
+    input_path: Path,
+    output_path: Path,
+    *,
+    layout_index: int,
+    title: str | None,
+    body: list[str],
+    body_placeholder_index: int | None,
+    clear_slides: bool,
+) -> tuple[int, int, int]:
+    presentation = Presentation(input_path)
+    layout_count = len(presentation.slide_layouts)
+    if layout_index < 0 or layout_index >= layout_count:
+        raise ValueError(
+            f"layout index {layout_index} is outside 0..{layout_count - 1}; "
+            f"available layouts: {available_layouts(presentation)}"
         )
-        pres_rels_path.write_text(pres_rels, encoding="utf-8")
 
-    return rid
+    removed = delete_all_slides(presentation) if clear_slides else 0
+    removed_sections = remove_section_lists(presentation) if clear_slides else 0
+    slide = presentation.slides.add_slide(presentation.slide_layouts[layout_index])
+
+    if title is not None:
+        title_shape = slide.shapes.title
+        if title_shape is None:
+            raise ValueError("the selected layout has no title placeholder")
+        title_shape.text = title
+
+    set_body_text(slide, body, body_placeholder_index)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    presentation.save(output_path)
+
+    reopened = Presentation(output_path)
+    if len(reopened.slides) == 0:
+        raise ValueError("saved presentation contains no slides")
+    if clear_slides and count_section_lists(reopened) != 0:
+        raise ValueError("saved presentation contains stale section information")
+    return removed, removed_sections, len(reopened.slides)
 
 
-def _get_next_slide_id(unpacked_dir: Path) -> int:
-    pres_path = unpacked_dir / "ppt" / "presentation.xml"
-    pres_content = pres_path.read_text(encoding="utf-8")
-    slide_ids = [int(m) for m in re.findall(r'<p:sldId[^>]*id="(\d+)"', pres_content)]
-    return max(slide_ids) + 1 if slide_ids else 256
+def run(args: argparse.Namespace) -> None:
+    template = args.template.expanduser()
+    output = args.output.expanduser()
+    validate_paths(template, output, args.force)
+    clear_slides = (
+        args.clear_slides
+        if args.clear_slides is not None
+        else template.suffix.lower() == ".potx"
+    )
+
+    if template.suffix.lower() == ".potx":
+        with tempfile.TemporaryDirectory(prefix="azure-pptx-") as temp_dir:
+            converted = Path(temp_dir) / "template.pptx"
+            convert_potx_to_pptx(template, converted)
+            removed, removed_sections, slide_count = create_presentation(
+                converted,
+                output,
+                layout_index=args.layout_index,
+                title=args.title,
+                body=args.body,
+                body_placeholder_index=args.body_placeholder_index,
+                clear_slides=clear_slides,
+            )
+    else:
+        removed, removed_sections, slide_count = create_presentation(
+            template,
+            output,
+            layout_index=args.layout_index,
+            title=args.title,
+            body=args.body,
+            body_placeholder_index=args.body_placeholder_index,
+            clear_slides=clear_slides,
+        )
+
+    print(f"created: {output}")
+    print(f"removed slides: {removed}")
+    print(f"removed section lists: {removed_sections}")
+    print(f"output slides: {slide_count}")
 
 
-def parse_source(source: str) -> tuple[str, str | None]:
-    if source.startswith("slideLayout") and source.endswith(".xml"):
-        return ("layout", source)
-
-    return ("slide", None)
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        run(args)
+    except (
+        KeyError,
+        OSError,
+        PackageNotFoundError,
+        ValueError,
+        zipfile.BadZipFile,
+    ) as exc:
+        parser.exit(1, f"error: {exc}\n")
+    return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python add_slide.py <unpacked_dir> <source>", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Source can be:", file=sys.stderr)
-        print("  slide2.xml        - duplicate an existing slide", file=sys.stderr)
-        print("  slideLayout2.xml  - create from a layout template", file=sys.stderr)
-        print("", file=sys.stderr)
-        print(
-            "To see available layouts: ls <unpacked_dir>/ppt/slideLayouts/",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    unpacked_dir = Path(sys.argv[1])
-    source = sys.argv[2]
-
-    if not unpacked_dir.exists():
-        print(f"Error: {unpacked_dir} not found", file=sys.stderr)
-        sys.exit(1)
-
-    source_type, layout_file = parse_source(source)
-
-    if source_type == "layout" and layout_file is not None:
-        create_slide_from_layout(unpacked_dir, layout_file)
-    else:
-        duplicate_slide(unpacked_dir, source)
+    raise SystemExit(main())

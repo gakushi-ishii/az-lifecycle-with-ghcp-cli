@@ -1,347 +1,105 @@
 ---
 name: azure-pptx
-description: "Use this skill any time a .pptx file is involved — as input, output, or both. This includes creating, reading, editing, or modifying presentations. Trigger whenever the user mentions \"deck,\" \"slides,\" \"presentation,\" or references a .pptx filename. This project uses the Microsoft Azure PowerPoint Template (Light)."
-license: Proprietary. LICENSE.txt has complete terms
+description: Microsoft Azure PowerPoint Templateを使ったPPTXの作成、編集、内容確認、画像化を支援する。WHEN: pptx, PowerPoint, スライド, プレゼンテーション, deck, Azureテンプレート
 ---
 
-# PPTX Skill
+# Azure PPTX Skill
 
-> **出自**: [Anthropic PPTX Skill](https://github.com/anthropics/skills/tree/main/pptx) をベースに、プロジェクト固有のルールを追加。  
-> 「📌」マークのあるセクションは本リポジトリ専用のルールであり、ベーススキルには含まれない。
+このスキルは、Microsoft Azure PowerPoint Templateを保持したままプレゼンテーションを作成、編集するためのリポジトリ固有手順を定義する。実装には公開仕様と外部OSSを使用する。
 
-## Quick Reference
+## 適用条件
 
-| Task | Guide |
-|------|-------|
-| Read/analyze content | `uv run python -m markitdown presentation.pptx` |
-| Edit existing slides | Read [references/editing.md](references/editing.md) then [references/azure-template.md](references/azure-template.md) |
-| Create new from template | [テンプレートから新規作成](#テンプレートから新規作成) — python-pptx でテンプレートを開き、不要スライドを削除して構築 📌 |
-| Create from scratch | Read [references/pptxgenjs.md](references/pptxgenjs.md) **only when the user explicitly says template use is unnecessary** 📌 |
+- `.pptx` を作成または編集するときに使用する。
+- 新規作成では `.github/skills/azure-pptx/assets/Microsoft-Azure-PowerPoint-Template-Light.potx` を必ず基にする。
+- ユーザーがテンプレート不要と明示した場合だけ、テンプレートを使わない方法を検討する。
+- テンプレート固有のレイアウト、フォント、プレースホルダーは [references/azure-template.md](references/azure-template.md) に従う。
 
----
+## 作成前の確認
 
-## Reading Content
+1. 内容に合うテンプレートレイアウトを選ぶ。
+2. 図を使う場合は、1スライドで文字を読める大きさになるか確認する。
+3. 大型の構成図は無理に縮小せず、ファイル名を示して別資料を参照させる。
+4. Copilot CLIやMCPツールを説明する場合は、機能名だけでなく提供元と用途を書く。
+
+## 使用する仕様とツール
+
+| 対象 | 用途 | 参照先 |
+|---|---|---|
+| ISO/IEC 29500、ECMA-376 | PPTXのパッケージとPresentationMLの仕様 | [ECMA-376](https://ecma-international.org/publications-and-standards/standards/ecma-376/)、[PresentationML document structure](https://learn.microsoft.com/en-us/office/open-xml/presentation/structure-of-a-presentationml-document) |
+| python-pptx 1.0.2（MIT） | テンプレートを保持したスライド操作 | [公式ドキュメント](https://python-pptx.readthedocs.io/en/latest/)、[GitHub](https://github.com/scanny/python-pptx) |
+| LibreOffice（MPL 2.0） | PPTXからPDFへの変換 | [コマンドライン引数](https://help.libreoffice.org/latest/en-US/text/shared/guide/start_parameters.html) |
+| Poppler `pdftoppm`（GPL-2.0-or-later） | PDFの各ページをJPEGへ変換 | [Poppler](https://poppler.freedesktop.org/) |
+| MarkItDown（MIT） | スライド内テキストの抽出 | [GitHub](https://github.com/microsoft/markitdown) |
+
+LibreOfficeとPopplerは外部プログラムとして呼び出す。このリポジトリには両者の実行ファイルを含めない。
+
+## 新規プレゼンテーションの作成
+
+`add_slide.py` は `.potx` のPresentation Partを `.pptx` のコンテンツタイプへ変更した一時パッケージを作り、python-pptxでスライドを追加する。入力ファイルは変更しない。
 
 ```bash
-# Text extraction
-uv run python -m markitdown presentation.pptx
-
-# Visual overview
-uv run scripts/thumbnail.py presentation.pptx
-
-# Raw XML
-uv run scripts/office/unpack.py presentation.pptx unpacked/
+uv run .github/skills/azure-pptx/scripts/add_slide.py \
+  .github/skills/azure-pptx/assets/Microsoft-Azure-PowerPoint-Template-Light.potx \
+  output.pptx \
+  --layout-index 12 \
+  --title "タイトル" \
+  --body "1つ目の要点" \
+  --body "2つ目の要点"
 ```
 
----
+`.potx` を入力した場合は、テンプレートのサンプルスライドとセクション情報を削除してから1枚追加する。`.pptx` を入力した場合は既存スライドを保持する。既定の動作を変更する場合は `--clear-slides` または `--keep-slides` を指定する。
 
-## Editing Workflow
-
-**Read [references/editing.md](references/editing.md) for full details.**
-
-1. Analyze template with `thumbnail.py`
-2. Unpack → manipulate slides → edit content → clean → pack
-
-**This project uses the Azure template.** Read [references/azure-template.md](references/azure-template.md) for template-specific details (fonts, layout indices, placeholder mappings, bullet rules). 📌
-
-### 📌 このプロジェクト固有の制約
-
-- `.pptx` を新規作成・編集する場合、**Microsoft Azure PowerPoint Template (Light) の利用は必須**
-- テンプレートを**使わずに**ゼロから組む案を、通常案として選んではならない
-- **テンプレート未使用の `.pptx` を作った時点で、このプロジェクトでは要件未達**
-- 「まずテンプレートなしで作って、あとで整える」という進め方も不可
-
-> **補足: python-pptx / pptxgenjs の利用について**
->
-> 上記で禁止しているのは「テンプレートを使わずにゼロから作る」ことであり、**ツール自体の利用ではない**。
->
-> - ✅ python-pptx で **テンプレート .potx/.pptx を開いて** スライドを編集・追加・削除する → テンプレート利用
-> - ❌ python-pptx で `Presentation()` を空から作る → テンプレート未使用
-> - ❌ pptxgenjs で独自デザインのスライドを生成する → テンプレート未使用
-
-### 📌 例外
-
-次の場合に限り、テンプレート未使用案を検討してよい。
-
-1. ユーザーがテンプレート不要と明示した場合
-2. 既存テンプレートでは物理的に表現できず、代替案の検討をユーザーが明示的に求めた場合
-
-上記以外では、**テンプレート未使用案を自分の判断で採用しない**。
-
-### 📌 実装前チェック
-
-スライド作成を始める前に、少なくとも次を確定すること。
-
-1. どの Azure template layout を使うか
-2. 画像中心のスライドか、画像 + 本文の併置か
-3. 図表や外部画像を使う場合、それが 1 スライドで読めるか
-4. 読めない場合、画像埋め込みを諦めて別資料参照に切り替えるか
-
-この確認をせずに「作りやすい方法」で新規生成へ進まないこと。
-
-### 📌 このリポジトリで得た運用メモ
-
-- Azure template 固有のレイアウト選択、Thank you の使い方、draw.io 図の貼り込み方は **`references/azure-template.md`** に追記して管理する
-- 概要図が大きすぎて 1 スライドで読めない場合、**図の貼り込みを必須にしない**。スライドには要点だけを載せ、図は別資料参照に切り替えてよい
-- `SKILL.md` には「いつ template を使うか」「どういう順序で進めるか」の方針だけを書き、個別レイアウトの運用詳細は持ち込まない
-- 初回出力をそのまま完成扱いにしない。`markitdown` と `soffice -> pdftoppm` の両方で内容と見た目を確認してから仕上げる
-
-### 📌 テンプレートから新規作成
-
-テンプレートをベースに新規プレゼンテーションを作る場合、XML 直接操作ではなく **python-pptx** を使う。
-
-> **なぜ XML 直接操作ではなく python-pptx か**: テンプレートの XML 構造にはスライド間の相互参照（sldIdLst、p14:sectionLst、presentation.xml.rels）が多数含まれる。XML 直接操作でスライドを削除すると孤児参照が残り、PowerPoint が破損と判定する。python-pptx はこれらの参照を内部で管理するため、生 XML 操作より安全である。ただし、以下のスライド削除コードは `_sldIdLst` 等の private API に依存するため、python-pptx のバージョン更新時には動作確認が必要。
-
-#### 手順
-
-1. **テンプレートを .pptx に変換**: `.potx` を zip として開き、`[Content_Types].xml` 内の `presentationml.template.main+xml` を `presentationml.presentation.main+xml` に置換して `.pptx` として保存
-2. **python-pptx で開く**: `Presentation('template.pptx')` でスライドマスター・レイアウトを含む状態で開く
-3. **不要スライドを削除**: テンプレートのサンプルスライドを削除（下記コード参照）
-4. **新規スライドを追加**: `prs.slide_layouts[N]` からレイアウトを選び、`prs.slides.add_slide(layout)` で追加
-5. **コンテンツを設定**: プレースホルダにテキスト・表・画像を挿入
-6. **保存**: `prs.save('output.pptx')`
-
-#### python-pptx でのスライド削除
-
-```python
-def delete_slide(prs, slide_index):
-    """指定インデックスのスライドを削除する。"""
-    rId = prs.slides._sldIdLst[slide_index].get(
-        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
-    )
-    prs.part.drop_rel(rId)
-    del prs.slides._sldIdLst[slide_index]
-
-# テンプレートスライドを末尾から削除（インデックスがずれないよう逆順）
-for i in range(len(prs.slides) - 1, -1, -1):
-    delete_slide(prs, i)
-```
-
----
-
-## Creating from Scratch
-
-> 📌 **このリポジトリでは例外時のみ使用。** Azure template 利用が前提のため、ユーザーが明示的に例外を認めた場合のみ使う。
-
-**Read [references/pptxgenjs.md](references/pptxgenjs.md) for full details.**
-
----
-
-## 📌 スライドコンテンツのルール
-
-### 言葉遣い
-- 「ベストプラクティス」「自動」などの曖昧・冗長な表現を避け、具体的に何をどうするかを書く
-- AIエージェントの動作として当然のこと（生成、取得、分析など）に「自動」は付けない
-- 曖昧な用語は具体的な対象に置き換える（例: 「ベストプラクティス」→「Bicepスキーマ」「サービス推奨構成」）
-
-### ツール・機能の出所を明記する
-> 📌 Copilot CLI / MCP ツール紹介スライドを作る場合のルール。一般的なアーキテクチャ資料や業務資料には機械的に適用しない。
-
-- ツールや機能をスライドで説明する際は、提供元を必ず明記する
-  - Azure MCP Server のツール（aks, bicepschema, applens 等）
-  - MS Learn MCP Server のツール（microsoft_docs_search, code_sample_search 等）
-  - Copilot CLI 組み込み機能（/research, /model, /skills 等）
-  - Copilot CLI Skill（azure-pptx, azure-drawio 等）
-- グループヘッダ（太字）＋インデントされたサブ項目で構造化する
-- ツール名だけ列挙せず、何ができるかを添える（例: 「applens」→「applens（「問題の診断と解決」機能）で問題を検出」）
-
-### 聴衆視点での検証
-- スライドを書く際は「聴衆がこれを見て理解できるか？次に何を知りたいか？」を考慮する
-- 抽象的な説明には具体例（ツール名、コマンド例、ユースケース）を添える
-- 専門用語やサービス名が初出の場合は、何であるかを補足する
-
-### スライド構成・順序
-- 同じカテゴリ・テーマのスライドは隣接させる
-- スライドの追加・移動後は、孤立したスライドがないか全体を確認する
-- 前のスライドで言及した概念が、後のスライドで説明される順序を意識する
-
----
-
-## Design Ideas
-
-> 📌 **テンプレート利用時の注意**: Azure template はブランドカラー（Azure Blue 系）・フォント（Segoe UI）が固定されている。以下の Color Palettes / Typography セクションはテンプレート未使用時（pptxgenjs）の参考であり、**Azure template 利用時はテンプレートのスタイルに従うこと**。レイアウト指針・スペーシング・Data display の考え方は参考にしてよい。
-
-**Don't create boring slides.** Plain bullets on a white background won't impress anyone. Consider ideas from this list for each slide.
-
-### Before Starting
-
-- **Pick a bold, content-informed color palette**: The palette should feel designed for THIS topic. If swapping your colors into a completely different presentation would still "work," you haven't made specific enough choices.
-- **Dominance over equality**: One color should dominate (60-70% visual weight), with 1-2 supporting tones and one sharp accent. Never give all colors equal weight.
-- **Dark/light contrast**: Dark backgrounds for title + conclusion slides, light for content ("sandwich" structure). Or commit to dark throughout for a premium feel.
-- **Commit to a visual motif**: Pick ONE distinctive element and repeat it — rounded image frames, icons in colored circles, thick single-side borders. Carry it across every slide.
-
-### Color Palettes
-
-Choose colors that match your topic — don't default to generic blue. Use these palettes as inspiration:
-
-| Theme | Primary | Secondary | Accent |
-|-------|---------|-----------|--------|
-| **Midnight Executive** | `1E2761` (navy) | `CADCFC` (ice blue) | `FFFFFF` (white) |
-| **Forest & Moss** | `2C5F2D` (forest) | `97BC62` (moss) | `F5F5F5` (cream) |
-| **Coral Energy** | `F96167` (coral) | `F9E795` (gold) | `2F3C7E` (navy) |
-| **Warm Terracotta** | `B85042` (terracotta) | `E7E8D1` (sand) | `A7BEAE` (sage) |
-| **Ocean Gradient** | `065A82` (deep blue) | `1C7293` (teal) | `21295C` (midnight) |
-| **Charcoal Minimal** | `36454F` (charcoal) | `F2F2F2` (off-white) | `212121` (black) |
-| **Teal Trust** | `028090` (teal) | `00A896` (seafoam) | `02C39A` (mint) |
-| **Berry & Cream** | `6D2E46` (berry) | `A26769` (dusty rose) | `ECE2D0` (cream) |
-| **Sage Calm** | `84B59F` (sage) | `69A297` (eucalyptus) | `50808E` (slate) |
-| **Cherry Bold** | `990011` (cherry) | `FCF6F5` (off-white) | `2F3C7E` (navy) |
-
-### For Each Slide
-
-**Every slide needs a visual element** — image, chart, icon, or shape. Text-only slides are forgettable.
-
-**Layout options:**
-- Two-column (text left, illustration on right)
-- Icon + text rows (icon in colored circle, bold header, description below)
-- 2x2 or 2x3 grid (image on one side, grid of content blocks on other)
-- Half-bleed image (full left or right side) with content overlay
-
-**Data display:**
-- Large stat callouts (big numbers 60-72pt with small labels below)
-- Comparison columns (before/after, pros/cons, side-by-side options)
-- Timeline or process flow (numbered steps, arrows)
-
-**Visual polish:**
-- Icons in small colored circles next to section headers
-- Italic accent text for key stats or taglines
-
-### Typography
-
-**Choose an interesting font pairing** — don't default to Arial. Pick a header font with personality and pair it with a clean body font.
-
-| Header Font | Body Font |
-|-------------|-----------|
-| Georgia | Calibri |
-| Arial Black | Arial |
-| Calibri | Calibri Light |
-| Cambria | Calibri |
-| Trebuchet MS | Calibri |
-| Impact | Arial |
-| Palatino | Garamond |
-| Consolas | Calibri |
-
-| Element | Size |
-|---------|------|
-| Slide title | 36-44pt bold |
-| Section header | 20-24pt bold |
-| Body text | 14-16pt |
-| Captions | 10-12pt muted |
-
-### Spacing
-
-- 0.5" minimum margins
-- 0.3-0.5" between content blocks
-- Leave breathing room—don't fill every inch
-
-### Avoid (Common Mistakes)
-
-- **Don't repeat the same layout** — vary columns, cards, and callouts across slides
-- **Don't center body text** — left-align paragraphs and lists; center only titles
-- **Don't skimp on size contrast** — titles need 36pt+ to stand out from 14-16pt body
-- **Don't default to blue** — pick colors that reflect the specific topic
-- **Don't mix spacing randomly** — choose 0.3" or 0.5" gaps and use consistently
-- **Don't style one slide and leave the rest plain** — commit fully or keep it simple throughout
-- **Don't create text-only slides** — add images, icons, charts, or visual elements; avoid plain title + bullets
-- **Don't forget text box padding** — when aligning lines or shapes with text edges, set `margin: 0` on the text box or offset the shape to account for padding
-- **Don't use low-contrast elements** — icons AND text need strong contrast against the background; avoid light text on light backgrounds or dark text on dark backgrounds
-- **NEVER use accent lines under titles** — these are a hallmark of AI-generated slides; use whitespace or background color instead
-
----
-
-## QA (Required)
-
-**Assume there are problems. Your job is to find them.**
-
-Your first render is almost never correct. Approach QA as a bug hunt, not a confirmation step. If you found zero issues on first inspection, you weren't looking hard enough.
-
-### Content QA
+本文プレースホルダーを明示する場合は `--body-placeholder-index` を使う。
 
 ```bash
-uv run python -m markitdown output.pptx
+uv run .github/skills/azure-pptx/scripts/add_slide.py \
+  input.pptx output.pptx \
+  --keep-slides \
+  --layout-index 14 \
+  --body-placeholder-index 12 \
+  --title "比較" \
+  --body "左列の要点"
 ```
 
-Check for missing content, typos, wrong order.
+`add_slide.py` は空のデッキの初期化と単純なスライド追加に使う。複数列、画像、表を含むプレゼンテーションでは、最初にこのスクリプトでテンプレート由来のPPTXを作り、そのPPTXを開く作業用スクリプトをPEP 723形式で作成する。汎用CLIへすべてのレイアウト操作を詰め込まない。
 
-**When using templates, check for leftover placeholder text:**
+## 既存プレゼンテーションの編集
+
+編集用スクリプトは作業内容ごとにPEP 723形式で作成し、`uv run` で実行する。次の条件を守る。
+
+1. `Presentation("input.pptx")` で既存ファイルを開き、空の `Presentation()` から作り直さない。
+2. テンプレートのプレースホルダーへ内容を設定し、位置、フォント、文字サイズを不要に上書きしない。
+3. 箇条書きプレースホルダーへ手動の箇条書き記号を入力しない。
+4. 出力先を入力とは別のファイルにし、保存後にpython-pptxで再度開けることを確認する。
+
+python-pptxにはスライドを削除する公開APIがない。`add_slide.py` はテンプレートのサンプルを除去するため、python-pptx 1.0.2に限定して `Slides._sldIdLst` を使用する。python-pptxを更新するときは、テンプレート変換、全スライド削除、追加、保存、再オープンの一連の確認を行う。
+
+## 内容と表示の確認
+
+スライド内のテキストを抽出する。
 
 ```bash
-uv run python -m markitdown output.pptx | grep -iE "xxxx|lorem|ipsum|this.*(page|slide).*layout"
+uv run --with "markitdown[pptx]" python -m markitdown output.pptx
 ```
 
-If grep returns results, fix them before declaring success.
-
-### Visual QA
-
-**⚠️ USE SUBAGENTS** — even for 2-3 slides. You've been staring at the code and will see what you expect, not what's there. Subagents have fresh eyes.
-
-Convert slides to images (see [Converting to Images](#converting-to-images)), then use this prompt:
-
-```
-Visually inspect these slides. Assume there are issues — find them.
-
-Look for:
-- Overlapping elements (text through shapes, lines through words, stacked elements)
-- Text overflow or cut off at edges/box boundaries
-- Decorative lines positioned for single-line text but title wrapped to two lines
-- Source citations or footers colliding with content above
-- Elements too close (< 0.3" gaps) or cards/sections nearly touching
-- Uneven gaps (large empty area in one place, cramped in another)
-- Insufficient margin from slide edges (< 0.5")
-- Columns or similar elements not aligned consistently
-- Low-contrast text (e.g., light gray text on cream-colored background)
-- Low-contrast icons (e.g., dark icons on dark backgrounds without a contrasting circle)
-- Text boxes too narrow causing excessive wrapping
-- Leftover placeholder content
-
-For each slide, list issues or areas of concern, even if minor.
-
-Read and analyze these images:
-1. /path/to/slide-01.jpg (Expected: [brief description])
-2. /path/to/slide-02.jpg (Expected: [brief description])
-
-Report ALL issues found, including minor ones.
-```
-
-### Verification Loop
-
-1. Generate slides → Convert to images → Inspect
-2. **List issues found** (if none found, look again more critically)
-3. Fix issues
-4. **Re-verify affected slides** — one fix often creates another problem
-5. Repeat until a full pass reveals no new issues
-
-**Do not declare success until you've completed at least one fix-and-verify cycle.**
-
----
-
-## Converting to Images
-
-Convert presentations to individual slide images for visual inspection:
+各スライドをJPEGへ変換する。
 
 ```bash
-uv run scripts/office/soffice.py --headless --convert-to pdf output.pptx
-pdftoppm -jpeg -r 150 output.pdf slide
+uv run .github/skills/azure-pptx/scripts/thumbnail.py output.pptx
 ```
 
-This creates `slide-01.jpg`, `slide-02.jpg`, etc.
-
-To re-render specific slides after fixes:
+既定の出力先は `output-slides/`、解像度は150 DPIである。特定範囲だけを出力する場合は `--first` と `--last` を指定する。
 
 ```bash
-pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
+uv run .github/skills/azure-pptx/scripts/thumbnail.py \
+  output.pptx \
+  --outdir rendered \
+  --first 2 \
+  --last 4
 ```
 
----
+抽出したテキストでは、欠落、誤字、スライド順を確認する。JPEGでは、文字切れ、要素の重なり、余白、コントラスト、プレースホルダーの残存を確認する。修正後は `--first`、`--last`、`--force` を指定し、影響したスライドだけを再度変換する。
 
-## Dependencies
+## テンプレートを使わない例外
 
-> 📌 **このリポジトリでは `pip` を直接使わない。** `uv add`（プロジェクト依存）/ `uv pip install`（グローバル）/ PEP 723 インラインメタデータ（単一ファイルスクリプト）で管理すること。以下は必要なパッケージの一覧であり、インストールコマンドはリポジトリの規約に従う。
-
-- `markitdown[pptx]` — text extraction（xlsx 読み取りには追加で `openpyxl` が必要）
-- `Pillow` — thumbnail grids
-- `defusedxml` — XML parsing（office scripts 全般で使用）
-- `lxml` — XML validation and schema checking（validators で使用）
-- `pptxgenjs`（npm） — creating from scratch
-- LibreOffice (`soffice`) — PDF conversion (via `scripts/office/soffice.py`)
-- Poppler (`pdftoppm`) — PDF to image conversion
+ユーザーがテンプレート不要と明示した場合は、[PptxGenJS公式ドキュメント](https://gitbrent.github.io/PptxGenJS/)など、採用するライブラリの公式資料を直接参照する。テンプレートを使わない成果物を通常の選択肢にはしない。
