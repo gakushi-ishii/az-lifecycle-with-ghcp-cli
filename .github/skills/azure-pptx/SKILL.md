@@ -1,6 +1,6 @@
 ---
 name: azure-pptx
-description: Microsoft Azure PowerPoint Templateを使ったPPTXの作成、編集、内容確認、画像化を支援する。WHEN: pptx, PowerPoint, スライド, プレゼンテーション, deck, Azureテンプレート
+description: "Microsoft Azure PowerPoint Templateを使ったPPTXの作成、編集、内容確認、画像化を支援する。WHEN: pptx, PowerPoint, スライド, プレゼンテーション, deck, Azureテンプレート"
 ---
 
 # Azure PPTX Skill
